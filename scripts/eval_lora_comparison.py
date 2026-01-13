@@ -5,72 +5,73 @@ import os
 import argparse
 import re
 
-def find_lora_weight(folder_path, target_step="latest"):
+def get_all_checkpoints(folder_path):
     """
-    指定されたフォルダ内から、目的のステップ数のLoRA重みファイルを探す。
-    
-    Args:
-        folder_path: 実験結果のルートフォルダ (例: .../outputs/lora_male_v1)
-        target_step: "latest", "final", または特定のステップ数 (int or str)
+    指定されたフォルダ内にあるすべてのチェックポイントと最終モデルを取得する。
     
     Returns:
-        (path_to_safetensors, step_count_str)
+        List of tuples: [(step_count, path, name_str), ...]
+        Sorted by step count.
     """
-    # 1. 学習完了後の最終出力 (pytorch_lora_weights.safetensors)
-    final_weight = os.path.join(folder_path, "pytorch_lora_weights.safetensors")
-    
-    # 2. チェックポイントフォルダの探索
     checkpoints = []
+    
+    # 1. 最終モデル (pytorch_lora_weights.safetensors)
+    final_weight = os.path.join(folder_path, "pytorch_lora_weights.safetensors")
+    if os.path.exists(final_weight):
+        # 便宜上、非常に大きなステップ数として扱うか、フラグで管理
+        checkpoints.append((999999999, final_weight, "Final"))
+
+    # 2. 途中経過 (checkpoint-xxxx)
     if os.path.exists(folder_path):
         for d in os.listdir(folder_path):
             if d.startswith("checkpoint-"):
                 try:
                     step = int(d.split("-")[1])
-                    checkpoints.append((step, os.path.join(folder_path, d)))
+                    # checkpointフォルダの中のsafetensorsを探す
+                    ckpt_file = os.path.join(folder_path, d, "pytorch_lora_weights.safetensors")
+                    if os.path.exists(ckpt_file):
+                        checkpoints.append((step, ckpt_file, f"Step-{step}"))
                 except ValueError:
                     continue
     
-    # ステップ数順にソート
+    # ステップ順にソート
     checkpoints.sort(key=lambda x: x[0])
+    return checkpoints
+
+def find_lora_weight(folder_path, target_step="latest"):
+    """
+    (旧関数: 単一のステップを探す用)
+    """
+    all_ckpts = get_all_checkpoints(folder_path)
+    if not all_ckpts:
+        return None, None
+
+    if target_step == "latest":
+        return all_ckpts[-1][1], all_ckpts[-1][2]
     
-    # ターゲットに応じた選択ロジック
-    selected_path = None
-    selected_step_name = "Unknown"
-
-    if target_step == "final":
-        if os.path.exists(final_weight):
-            return final_weight, "Final"
-        elif checkpoints:
-            # finalがない場合は最新のcheckpoint
-            return checkpoints[-1][1], f"Step-{checkpoints[-1][0]}"
-            
+    elif target_step == "final":
+        # Finalを探す
+        for step, path, name in all_ckpts:
+            if name == "Final":
+                return path, name
+        # なければ最新
+        return all_ckpts[-1][1], all_ckpts[-1][2]
+        
     elif str(target_step).isdigit():
-        # 特定のステップ数を指定された場合
         target = int(target_step)
-        # 完全一致を探す
-        for step, path in checkpoints:
+        for step, path, name in all_ckpts:
             if step == target:
-                return os.path.join(path, "pytorch_lora_weights.safetensors"), f"Step-{step}"
-        print(f"⚠️ Step {target} not found in {os.path.basename(folder_path)}. using latest.")
-        # 見つからなければ最新
-        if checkpoints:
-            return os.path.join(checkpoints[-1][1], "pytorch_lora_weights.safetensors"), f"Step-{checkpoints[-1][0]}"
-
-    else: # "latest" or others
-        # チェックポイントの中で最新のもの
-        if checkpoints:
-            return os.path.join(checkpoints[-1][1], "pytorch_lora_weights.safetensors"), f"Step-{checkpoints[-1][0]}"
-        # チェックポイントがなければ final を見る
-        elif os.path.exists(final_weight):
-            return final_weight, "Final"
+                return path, name
+        print(f"⚠️ Step {target} not found. Using latest.")
+        return all_ckpts[-1][1], all_ckpts[-1][2]
 
     return None, None
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate and compare LoRA models from a directory")
-    parser.add_argument("--output_dir", type=str, default="/content/drive/MyDrive/github/diffusers/evaluations", help="Directory to save results")
+    parser.add_argument("--output_dir", type=str, default="/content/drive/MyDrive/github/diffusers/evaluations", help="Root directory to save results")
     parser.add_argument("--models_dir", type=str, default=None, help="Root directory containing experiment folders to scan")
-    parser.add_argument("--target_step", type=str, default="latest", help="Specific checkpoint step to load (e.g., 1000, 2000). Default is 'latest'.")
+    parser.add_argument("--target_step", type=str, default="latest", help="'latest', 'final', specific int, or 'all' to generate for all checkpoints.")
     parser.add_argument("--base_model", type=str, default="runwayml/stable-diffusion-v1-5", help="Base model path or ID")
     parser.add_argument("--lora_paths", type=str, nargs='+', help="Specific LoRA paths (Optional). Overrides models_dir scan.")
     
@@ -79,7 +80,6 @@ def main():
     # 1. 比較対象のLoRAリストを作成
     lora_candidates = {} # name -> folder_path
 
-    # 明示的にパスが指定された場合
     if args.lora_paths:
         for item in args.lora_paths:
             if ":" in item:
@@ -89,18 +89,16 @@ def main():
                 name = os.path.basename(item.rstrip("/"))
                 lora_candidates[name] = item
     
-    # ディレクトリをスキャンする場合
     elif args.models_dir and os.path.exists(args.models_dir):
         print(f"📂 Scanning models in: {args.models_dir}")
         for d in sorted(os.listdir(args.models_dir)):
             full_path = os.path.join(args.models_dir, d)
             if os.path.isdir(full_path):
-                # LoRAが含まれていそうなフォルダか簡易チェック
                 if os.path.exists(os.path.join(full_path, "pytorch_lora_weights.safetensors")) or \
                    any(sub.startswith("checkpoint-") for sub in os.listdir(full_path)):
                     lora_candidates[d] = full_path
     else:
-        # デフォルト (Colab用フォールバック)
+        # Colab Default
         default_dir = "/content/drive/MyDrive/github/diffusers/outputs"
         if os.path.exists(default_dir):
             print(f"ℹ️ No paths provided. Scanning default Colab output dir: {default_dir}")
@@ -134,56 +132,68 @@ def main():
         ("Fem Low",   "a photo of a female face, low score impression"),
     ]
     seeds = [42, 123]
-    os.makedirs(args.output_dir, exist_ok=True)
 
     # 4. 生成ループ
-    for name, folder_path in lora_candidates.items():
-        # 指定ステップの重みファイルを探す
-        weight_path, step_name = find_lora_weight(folder_path, args.target_step)
-        
-        if not weight_path:
-            print(f"⚠️ Skipping {name}: No valid weights found for step {args.target_step}")
-            continue
+    for model_name, folder_path in lora_candidates.items():
+        print(f"\n=========================================================")
+        print(f"🚀 Processing Model: {model_name}")
+        print(f"=========================================================")
 
-        print(f"\n---------------------------------------------------------")
-        print(f"🚀 Testing Model: {name} ({step_name})")
-        print(f"   Source: {weight_path}")
-        print(f"---------------------------------------------------------")
+        # ターゲットステップのリストを取得
+        targets = []
+        if args.target_step == "all":
+            targets = get_all_checkpoints(folder_path)
+            if not targets:
+                print(f"⚠️ No checkpoints found in {folder_path}")
+                continue
+        else:
+            path, name = find_lora_weight(folder_path, args.target_step)
+            if path:
+                targets = [(0, path, name)] # step数はダミー
+            else:
+                print(f"⚠️ Target step {args.target_step} not found for {model_name}")
+                continue
 
-        try:
-            pipe.unload_lora_weights()
-            pipe.load_lora_weights(os.path.dirname(weight_path), weight_name=os.path.basename(weight_path))
-        except Exception as e:
-            print(f"⚠️ Load Error for {name}: {e}")
-            continue
+        # モデルごとの保存先フォルダ作成
+        model_output_dir = os.path.join(args.output_dir, model_name)
+        os.makedirs(model_output_dir, exist_ok=True)
+        print(f"📂 Output Folder: {model_output_dir}")
 
-        for seed in seeds:
-            images = []
-            generator = torch.Generator("cuda").manual_seed(seed)
+        for step_val, weight_path, step_name in targets:
+            print(f"  👉 Testing: {step_name} ...", end="", flush=True)
+
+            try:
+                pipe.unload_lora_weights()
+                pipe.load_lora_weights(os.path.dirname(weight_path), weight_name=os.path.basename(weight_path))
+            except Exception as e:
+                print(f" [Error] {e}")
+                continue
+
+            for seed in seeds:
+                images = []
+                generator = torch.Generator("cuda").manual_seed(seed)
+                
+                for label, prompt in prompts:
+                    image = pipe(
+                        prompt, 
+                        num_inference_steps=30, 
+                        guidance_scale=7.5, 
+                        generator=generator
+                    ).images[0]
+                    images.append(image)
+                
+                # グリッド結合
+                w, h = images[0].size
+                grid = Image.new('RGB', (w * len(images), h))
+                for i, img in enumerate(images):
+                    grid.paste(img, (w * i, 0))
+                
+                # ファイル名: Step-XXXX_seedYY.png (モデル名はフォルダ名にあるので省略可だが、念のため)
+                save_filename = f"{step_name}_seed{seed}.png"
+                save_path = os.path.join(model_output_dir, save_filename)
+                grid.save(save_path)
             
-            print(f"  Generating Seed {seed} grid...", end="", flush=True)
-            for label, prompt in prompts:
-                image = pipe(
-                    prompt, 
-                    num_inference_steps=30, 
-                    guidance_scale=7.5, 
-                    generator=generator
-                ).images[0]
-                images.append(image)
             print(" Done.")
-            
-            # グリッド結合
-            w, h = images[0].size
-            grid = Image.new('RGB', (w * len(images), h))
-            for i, img in enumerate(images):
-                grid.paste(img, (w * i, 0))
-            
-            # ファイル名にステップ数を含める
-            safe_name = name.replace(' ', '_')
-            save_name = f"{safe_name}_{step_name}_seed{seed}.png"
-            save_path = os.path.join(args.output_dir, save_name)
-            grid.save(save_path)
-            print(f"  Saved: {save_path}")
 
     print(f"\n✨ All evaluations finished. Results in: {args.output_dir}")
 

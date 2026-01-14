@@ -489,6 +489,33 @@ def parse_args(input_args=None):
         ],
         help="The image interpolation method to use for resizing images.",
     )
+    parser.add_argument(
+        "--optimizer",
+        type=str,
+        default="adamw",
+        help="The optimizer to use: 'adamw' or 'prodigy'.",
+    )
+    parser.add_argument(
+        "--prodigy_learning_rate",
+        type=float,
+        default=1.0,
+        help="Learning rate for Prodigy optimizer. Note that Prodigy adapts the LR, so 1.0 is standard.",
+    )
+    parser.add_argument(
+        "--prodigy_decouple",
+        action="store_true",
+        help="Use decoupled weight decay for Prodigy.",
+    )
+    parser.add_argument(
+        "--prodigy_use_bias_correction",
+        action="store_true",
+        help="Use bias correction for Prodigy.",
+    )
+    parser.add_argument(
+        "--prodigy_safeguard_warmup",
+        action="store_true",
+        help="Use safeguard warmup for Prodigy.",
+    )
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -830,19 +857,6 @@ def main(args):
             models.extend([text_encoder_one, text_encoder_two])
         cast_training_params(models, dtype=torch.float32)
 
-    # Use 8-bit Adam for lower memory usage or to fine-tune the model in 16GB GPUs
-    if args.use_8bit_adam:
-        try:
-            import bitsandbytes as bnb
-        except ImportError:
-            raise ImportError(
-                "To use 8-bit Adam, please install the bitsandbytes library: `pip install bitsandbytes`."
-            )
-
-        optimizer_class = bnb.optim.AdamW8bit
-    else:
-        optimizer_class = torch.optim.AdamW
-
     # Optimizer creation
     params_to_optimize = list(filter(lambda p: p.requires_grad, unet.parameters()))
     if args.train_text_encoder:
@@ -851,13 +865,47 @@ def main(args):
             + list(filter(lambda p: p.requires_grad, text_encoder_one.parameters()))
             + list(filter(lambda p: p.requires_grad, text_encoder_two.parameters()))
         )
-    optimizer = optimizer_class(
-        params_to_optimize,
-        lr=args.learning_rate,
-        betas=(args.adam_beta1, args.adam_beta2),
-        weight_decay=args.adam_weight_decay,
-        eps=args.adam_epsilon,
-    )
+
+    if args.optimizer.lower() == "prodigy":
+        try:
+            import prodigyopt
+        except ImportError:
+            raise ImportError("To use Prodigy, please install the prodigyopt library: `pip install prodigyopt`")
+
+        optimizer_class = prodigyopt.Prodigy
+
+        optimizer = optimizer_class(
+            params_to_optimize,
+            lr=args.prodigy_learning_rate,
+            betas=(args.adam_beta1, args.adam_beta2),
+            beta3=None,
+            weight_decay=args.adam_weight_decay,
+            eps=args.adam_epsilon,
+            decouple=args.prodigy_decouple,
+            use_bias_correction=args.prodigy_use_bias_correction,
+            safeguard_warmup=args.prodigy_safeguard_warmup,
+        )
+    else:
+        # Use 8-bit Adam for lower memory usage or to fine-tune the model in 16GB GPUs
+        if args.use_8bit_adam:
+            try:
+                import bitsandbytes as bnb
+            except ImportError:
+                raise ImportError(
+                    "To use 8-bit Adam, please install the bitsandbytes library: `pip install bitsandbytes`."
+                )
+
+            optimizer_class = bnb.optim.AdamW8bit
+        else:
+            optimizer_class = torch.optim.AdamW
+
+        optimizer = optimizer_class(
+            params_to_optimize,
+            lr=args.learning_rate,
+            betas=(args.adam_beta1, args.adam_beta2),
+            weight_decay=args.adam_weight_decay,
+            eps=args.adam_epsilon,
+        )
 
     # Get the datasets: you can either provide your own training and evaluation files (see below)
     # or specify a Dataset from the hub (the dataset will be downloaded automatically from the datasets Hub).

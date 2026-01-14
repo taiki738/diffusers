@@ -4,6 +4,7 @@ from PIL import Image, ImageDraw, ImageFont
 import os
 import argparse
 import re
+import random
 
 def get_all_checkpoints(folder_path):
     """
@@ -74,6 +75,7 @@ def main():
     parser.add_argument("--target_step", type=str, default="latest", help="'latest', 'final', specific int, or 'all' to generate for all checkpoints.")
     parser.add_argument("--base_model", type=str, default="runwayml/stable-diffusion-v1-5", help="Base model path or ID")
     parser.add_argument("--lora_paths", type=str, nargs='+', help="Specific LoRA paths (Optional). Overrides models_dir scan.")
+    parser.add_argument("--random_seeds", type=int, default=0, help="Number of random seeds to use. If 0 (default), uses fixed seeds [42, 123].")
     
     args = parser.parse_args()
 
@@ -140,7 +142,16 @@ def main():
         ("Fem High",  "a photo of a female face, high score impression"),
         ("Fem Low",   "a photo of a female face, low score impression"),
     ]
-    seeds = [42, 123]
+    
+    # Seed設定
+    if args.random_seeds > 0:
+        seeds = [random.randint(0, 2**32 - 1) for _ in range(args.random_seeds)]
+        print(f"🎲 Using {args.random_seeds} random seeds: {seeds}")
+    else:
+        seeds = [42, 123]
+        print(f"🔒 Using fixed seeds: {seeds}")
+    
+    os.makedirs(args.output_dir, exist_ok=True)
     
     # 4. 生成ループ
     for model_name, folder_path in lora_candidates.items():
@@ -165,6 +176,11 @@ def main():
 
         # モデルごとの保存先フォルダ作成
         model_output_dir = os.path.join(args.output_dir, model_name)
+        
+        # ランダムシードの場合はサブフォルダを作成
+        if args.random_seeds > 0:
+            model_output_dir = os.path.join(model_output_dir, "random_seeds")
+            
         os.makedirs(model_output_dir, exist_ok=True)
         print(f"📂 Output Folder: {model_output_dir}")
 

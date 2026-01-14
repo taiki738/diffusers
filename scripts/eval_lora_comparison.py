@@ -117,12 +117,21 @@ def main():
     print(f"🔍 Found {len(lora_candidates)} models: {list(lora_candidates.keys())}")
 
     # 2. モデルロード
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    dtype = torch.float16 if device == "cuda" else torch.float32
+    
     print(f"🚀 Loading base model: {args.base_model}")
+    print(f"   Device: {device}, Dtype: {dtype}")
+
     pipe = StableDiffusionPipeline.from_pretrained(
         args.base_model,
-        torch_dtype=torch.float16
-    ).to("cuda")
+        torch_dtype=dtype
+    ).to(device)
     pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config, use_karras_sigmas=True)
+    
+    # CPUの場合、メモリ節約のためにattention slicingを有効化
+    if device == "cpu":
+        pipe.enable_attention_slicing()
 
     # 3. 比較プロンプト
     prompts = [
@@ -132,7 +141,7 @@ def main():
         ("Fem Low",   "a photo of a female face, low score impression"),
     ]
     seeds = [42, 123]
-
+    
     # 4. 生成ループ
     for model_name, folder_path in lora_candidates.items():
         print(f"\n=========================================================")
@@ -171,7 +180,7 @@ def main():
 
             for seed in seeds:
                 images = []
-                generator = torch.Generator("cuda").manual_seed(seed)
+                generator = torch.Generator(device).manual_seed(seed)
                 
                 for label, prompt in prompts:
                     image = pipe(

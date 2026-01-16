@@ -3,7 +3,6 @@ import argparse
 import torch
 from pathlib import Path
 from diffusers import StableDiffusionPipeline, StableDiffusionXLPipeline, AutoencoderKL
-from tqdm import tqdm
 
 # =================================================================
 # 設定: 実験ごとの設定テーブル
@@ -118,7 +117,8 @@ def generate_images(args):
 
             print(f"   🎨 Generating {args.num_images} images...")
             
-            for i in tqdm(range(args.num_images)):
+            # 生成ループ (tqdmを廃止し、シンプルなテキストログに変更)
+            for i in range(args.num_images):
                 seed = torch.randint(0, 2**32 - 1, (1,)).item()
                 generator = torch.Generator(device=device).manual_seed(seed)
                 
@@ -130,6 +130,10 @@ def generate_images(args):
                     generator=generator
                 ).images[0]
                 image.save(save_dir / f"{i:04d}_seed{seed}.png")
+                
+                # 100枚ごとに進捗を表示
+                if (i + 1) % 100 == 0:
+                    print(f"      - Progress: {i + 1}/{args.num_images} images generated.")
                 
             del pipe
             torch.cuda.empty_cache()

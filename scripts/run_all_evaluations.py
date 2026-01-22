@@ -141,6 +141,11 @@ def main():
             # 対応する正解データセット
             train_data_path = get_dataset_path(args.dataset_root, gender, impression)
             
+            # プロンプトの構築 (CLIP Score用)
+            prompt_text = f"a photo of a {gender} face, {impression} score impression"
+            if "trigger" in matched_exp_key:
+                prompt_text = prompt_text.replace("a photo of", "a photo of ohwx")
+            
             # 結果保存パス
             metric_base_name = f"metrics_{matched_exp_key}_{gender}_{impression}"
             fid_json = os.path.join(args.output_dir, f"{metric_base_name}_fid.json")
@@ -154,6 +159,7 @@ def main():
                     f"--train_dir {train_data_path} "
                     f"--val_dir {train_data_path} " # Dummy (same as train)
                     f"--gen_dir {prompt_dir} "
+                    f"--prompt \"{prompt_text}\" "
                     f"--output_json {fid_json}"
                 )
                 run_command(cmd_fid)

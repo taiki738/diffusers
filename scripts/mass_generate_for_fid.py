@@ -11,14 +11,16 @@ diffusers.utils.logging.set_verbosity_error()
 MAPPING = {
     "lora_baseline": ("stable-diffusion-v1-5", False, "latest"),
     "lora_rank4_lr5e5": ("stable-diffusion-v1-5", False, "latest"),
-    "lora_rank16_batch16_A100": ("stable-diffusion-v1-5", False, "latest"),
+    "lora_rank16_lr1e4": ("stable-diffusion-v1-5", False, "latest"),
     "lora_rank16_lr5e5": ("stable-diffusion-v1-5", False, "latest"),
-    "lora_rank16_lr5e5_trigger_ohwx": ("stable-diffusion-v1-5", False, "latest"),
-    "realvisxl_lora_rank16_prodigy": ("RealVisXL_V4.0", True, "latest"),
+
     "sdxl_lora_rank16_prodigy": ("sdxl-base-1.0", True, "latest"),
     "sdxl_lora_rank32_prodigy": ("sdxl-base-1.0", True, "latest"),
-    "realvisxl_lora_rank16_prodigy_trigger_ohwx": ("RealVisXL_V4.0", True, "latest"),
+    "realvisxl_lora_rank16_prodigy": ("RealVisXL_V4.0", True, "latest"),
+
+    "lora_rank16_lr5e5_trigger_ohwx": ("stable-diffusion-v1-5", False, "latest"),
     "sdxl_lora_rank16_prodigy_trigger_ohwx": ("sdxl-base-1.0", True, "latest"),
+    "realvisxl_lora_rank16_prodigy_trigger_ohwx": ("RealVisXL_V4.0", True, "latest"),
 }
 
 def sanitize_prompt(prompt):
@@ -113,22 +115,36 @@ def generate_images(args):
             pipe.to(device)
             pipe.load_lora_weights(str(ckpt_path))
             
-            # 生成ループ (current_countからスタート)
-            for i in range(current_count, args.num_images):
-                seed = torch.randint(0, 2**32 - 1, (1,)).item()
-                generator = torch.Generator(device=device).manual_seed(seed)
+            # 生成ループ (バッチ対応)
+            needed_images = args.num_images - current_count
+            
+            for i in range(0, needed_images, args.batch_size):
+                # 今回のバッチサイズ
+                current_batch_size = min(args.batch_size, needed_images - i)
                 
-                image = pipe(
+                # シード生成
+                seeds = [torch.randint(0, 2**32 - 1, (1,)).item() for _ in range(current_batch_size)]
+                generators = [torch.Generator(device=device).manual_seed(s) for s in seeds]
+                
+                images = pipe(
                     final_prompt, 
                     num_inference_steps=30, 
                     height=height,
                     width=width,
-                    generator=generator
-                ).images[0]
-                image.save(target_save_dir / f"{i:04d}_seed{seed}.png")
+                    generator=generators,
+                    num_images_per_prompt=current_batch_size
+                ).images
                 
-                # 同一行を上書きして進捗を表示
-                print(f"\r      - Progress: {i + 1} / {args.num_images} images generated.", end="", flush=True)
+                # 保存
+                for idx, image in enumerate(images):
+                    global_idx = current_count + i + idx
+                    seed = seeds[idx]
+                    image.save(target_save_dir / f"{global_idx:04d}_seed{seed}.png")
+                
+                # 進捗表示
+                completed = current_count + i + current_batch_size
+                if completed % 100 == 0 or completed >= args.num_images:
+                    print(f"\r      - Progress: {completed} / {args.num_images} images generated.", end="", flush=True)
                 
             print(" Done.")
             del pipe
@@ -145,6 +161,7 @@ if __name__ == "__main__":
     parser.add_argument("--default_step", type=int, default=5000, help="Default step to use if available")
     parser.add_argument("--gender", type=str, default="male", choices=["male", "female"], help="Gender to replace {gender} in prompt")
     parser.add_argument("--prompt", type=str, default="a photo of a {gender} face, high score impression", help="Prompt template")
+    parser.add_argument("--batch_size", type=int, default=1, help="Batch size for generation")
     
     args = parser.parse_args()
     generate_images(args)
